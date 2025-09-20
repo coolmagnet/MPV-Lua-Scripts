@@ -1,0 +1,94 @@
+local mp = require 'mp'
+local utils = require 'mp.utils'
+
+local is_visible = false  -- Track OSD visibility state
+
+function show_directory_contents()
+    if is_visible then
+        -- Clear OSD if already visible
+        mp.command_native({
+            name = "osd-overlay",
+            id = 1,
+            format = "none",
+            data = ""
+        })
+        is_visible = false
+        return
+    end
+
+    -- Get current file path
+    local filepath = mp.get_property("path")
+    if not filepath then
+        mp.msg.warn("No file currently playing")
+        return
+    end
+    
+    -- Get directory from filepath
+    local directory = utils.split_path(filepath)
+    if directory == "." then
+        directory = mp.get_property("working-directory")
+    end
+    
+    -- Get all files in directory
+    local files = utils.readdir(directory, "files")
+    if not files then
+        mp.msg.warn("Could not read directory")
+        return
+    end
+    
+    -- Sort files alphabetically
+    table.sort(files, function(a, b)
+        return a:lower() < b:lower()  -- Case-insensitive sorting
+    end)
+    
+    -- Prepare OSD text, limit to 10 files
+    local osd_text = "Directory contents:\\N"
+    local max_files = math.min(#files, 10)
+    for i = 1, max_files do
+        osd_text = osd_text .. files[i] .. "\\N"
+    end
+    if #files > 10 then
+        osd_text = osd_text .. "More ...\\N"
+    end
+    
+    -- Get screen dimensions
+    local width = mp.get_property_number("osd-width")
+    local height = mp.get_property_number("osd-height")
+    
+    -- Calculate font size based on screen resolution
+    local base_font_size = 20
+    local scale_factor = math.min(width / 1280, height / 720)
+    local adjusted_font_size = math.floor(base_font_size * scale_factor)
+    
+    -- Center-left position with yellow font
+    local pos_data = string.format("{\\1c&H00FFFF&\\fs%d\\an4\\pos(%d,%d)}", 
+        adjusted_font_size, 10, height / 2) -- an4 is center-left, 10 is left margin, height/2 centers vertically
+    
+    -- Show OSD
+    mp.command_native({
+        name = "osd-overlay",
+        id = 1,
+        format = "ass-events",
+        data = pos_data .. osd_text,
+        res_x = width,
+        res_y = height
+    })
+    
+    is_visible = true
+    
+    -- Remove OSD after 10 seconds
+    mp.add_timeout(10, function()
+        if is_visible then
+            mp.command_native({
+                name = "osd-overlay",
+                id = 1,
+                format = "none",
+                data = ""
+            })
+            is_visible = false
+        end
+    end)
+end
+
+-- Bind to Ctrl+d as a toggle
+mp.add_key_binding("Ctrl+d", "show_directory", show_directory_contents)
