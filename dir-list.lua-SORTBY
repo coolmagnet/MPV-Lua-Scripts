@@ -1,0 +1,136 @@
+local mp = require 'mp'
+local utils = require 'mp.utils'
+
+-- Set sorting type: 1 = A-Z, 2 = File Size (largest to smallest), 3 = File Modification (newest to oldest)
+local SORT_BY = 2
+
+local is_visible = false  -- Track OSD visibility state
+
+function show_directory_contents(timeout, is_refresh)
+    -- If not a refresh and OSD is visible, clear it and return (toggle off)
+    if is_visible and not is_refresh then
+        mp.command_native({
+            name = "osd-overlay",
+            id = 1,
+            format = "none",
+            data = ""
+        })
+        is_visible = false
+        return
+    end
+
+    -- Get current file path
+    local filepath = mp.get_property("path")
+    if not filepath then
+        mp.msg.warn("No file currently playing")
+        return
+    end
+    
+    -- Get directory from filepath
+    local directory = utils.split_path(filepath)
+    if directory == "." then
+        directory = mp.get_property("working-directory")
+    end
+    
+    -- Get all files in directory
+    local files = utils.readdir(directory, "files")
+    if not files then
+        mp.msg.warn("Could not read directory")
+        return
+    end
+    
+    -- Create table to store file info
+    local file_info = {}
+    for _, file in ipairs(files) do
+        local full_path = utils.join_path(directory, file)
+        local stat = utils.file_info(full_path)
+        if stat then
+            table.insert(file_info, {
+                name = file,
+                size = stat.size or 0,
+                mtime = stat.mtime or 0
+            })
+        end
+    end
+    
+    -- Sort files based on SORT_BY
+    table.sort(file_info, function(a, b)
+        if SORT_BY == 1 then
+            -- A-Z (case-insensitive)
+            return a.name:lower() < b.name:lower()
+        elseif SORT_BY == 2 then
+            -- File Size (largest to smallest)
+            return a.size > b.size
+        elseif SORT_BY == 3 then
+            -- File Modification (newest to oldest)
+            return a.mtime > b.mtime
+        end
+        return a.name:lower() < b.name:lower()  -- Default to A-Z
+    end)
+    
+    -- Prepare OSD text, limit to 10 files
+    local osd_text = ""  -- No "Directory contents:\\N"
+    local max_files = math.min(#file_info, 10)
+    for i = 1, max_files do
+        osd_text = osd_text .. file_info[i].name .. "\\N"
+    end
+    if #file_info > 10 then
+        osd_text = osd_text .. "More ...\\N"
+    end
+    
+    -- Get screen dimensions
+    local width = mp.get_property_number("osd-width")
+    local height = mp.get_property_number("osd-height")
+    
+    -- Calculate font size based on screen resolution
+    local base_font_size = 20
+    local scale_factor = math.min(width / 1280, height / 720)
+    local adjusted_font_size = math.floor(base_font_size * scale_factor)
+    
+    -- Center-left position with yellow font
+    local pos_data = string.format("{\\1c&H00FFFF&\\fs%d\\an4\\pos(%d,%d)}", 
+        adjusted_font_size, 10, height / 2) -- an4 is center-left, 10 is left margin, height/2 centers vertically
+    
+    -- Show OSD
+    mp.command_native({
+        name = "osd-overlay",
+        id = 1,
+        format = "ass-events",
+        data = pos_data .. osd_text,
+        res_x = width,
+        res_y = height
+    })
+    
+    is_visible = true
+    
+    -- Apply timeout only if specified
+    if timeout then
+        mp.add_timeout(timeout, function()
+            if is_visible then
+                mp.command_native({
+                    name = "osd-overlay",
+                    id = 1,
+                    format = "none",
+                    data = ""
+                })
+                is_visible = false
+            end
+        end)
+    end
+end
+
+-- Function to handle file-loaded event
+function on_file_loaded()
+    if is_visible then
+        show_directory_contents(nil, true)  -- Refresh OSD without timeout if visible
+    end
+end
+
+-- Bind Ctrl+d to show with 10-second timeout
+mp.add_key_binding("Ctrl+d", "show_directory_timeout", function() show_directory_contents(10, false) end)
+
+-- Bind Ctrl+Shift+d to toggle without timeout
+mp.add_key_binding("Ctrl+Shift+d", "toggle_directory", function() show_directory_contents(nil, false) end)
+
+-- Register file-loaded event
+mp.register_event("file-loaded", on_file_loaded)
